@@ -1,0 +1,7 @@
+**/__pycache__/
+.pytest_cache/
+.idea/
+!src/antlr/*.g4
+!src/antlr/__init__.py
+tests/test_cases/error/*
+tests/test_cases/ok/*
