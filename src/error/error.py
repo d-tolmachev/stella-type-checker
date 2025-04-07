@@ -49,7 +49,7 @@ class Error:
             case ErrorKind.ERROR_UNEXPECTED_FIELD_ACCESS:
                 return 'unexpected field access {} in record {}'
             case ErrorKind.ERROR_UNEXPECTED_VARIANT_LABEL:
-                return 'unexpected variant label {} in {} of type {}'
+                return 'unexpected variant labels {} in {} of type {}'
             case ErrorKind.ERROR_TUPLE_INDEX_OUT_OF_BOUNDS:
                 return 'tuple index {} is out of bounds {}'
             case ErrorKind.ERROR_UNEXPECTED_TUPLE_LENGTH:
@@ -65,13 +65,33 @@ class Error:
             case ErrorKind.ERROR_NONEXHAUSTIVE_MATCH_PATTERNS:
                 return 'non-exhaustive patterns for type {}'
             case ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE:
-                return 'unexpected patterns {} for type {}'
+                return 'unexpected pattern {} for type {}'
             case ErrorKind.ERROR_DUPLICATE_RECORD_FIELDS:
                 return 'duplicate fields in record {}'
             case ErrorKind.ERROR_DUPLICATE_RECORD_TYPE_FIELDS:
                 return 'duplicate fields in record of {} type'
             case ErrorKind.ERROR_DUPLICATE_VARIANT_TYPE_FIELDS:
                 return 'duplicate type of field {} in variant {}'
+            case ErrorKind.ERROR_INCORRECT_ARITY_OF_MAIN:
+                return 'the main function must have one parameter but got {}'
+            case ErrorKind.ERROR_DUPLICATE_RECORD_PATTERN_FIELDS:
+                return 'duplicate fields in record pattern {}'
+            case ErrorKind.ERROR_EXCEPTION_TYPE_NOT_DECLARED:
+                return 'exception type is not declared'
+            case ErrorKind.ERROR_AMBIGUOUS_THROW_TYPE:
+                return 'can\'t infer the throw {} type'
+            case ErrorKind.ERROR_AMBIGUOUS_REFERENCE_TYPE:
+                return 'can\'t infer the reference {} type'
+            case ErrorKind.ERROR_AMBIGUOUS_PANIC_TYPE:
+                return 'can\'t infer the panic {} type'
+            case ErrorKind.ERROR_NOT_A_REFERENCE:
+                return 'expected an expression of a reference type but got non-reference type {} for expression {}'
+            case ErrorKind.ERROR_UNEXPECTED_MEMORY_ADDRESS:
+                return 'unexpected memory address {} while {} is expected'
+            case ErrorKind.ERROR_UNEXPECTED_SUBTYPE:
+                return 'expected a subtype of {} but got  type of {} for expression {}'
+            case ErrorKind.ERROR_UNEXPECTED_REFERENCE:
+                return 'expected an expression of a non-reference type {} but got reference type {} for expression {}'
             case _:
                 return 'unknown error'
 

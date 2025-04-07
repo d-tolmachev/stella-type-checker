@@ -7,11 +7,13 @@ class TypeContext:
     _parent: Self
     _variable_types: dict[str, Type]
     _functional_types: dict[str, FunctionalType]
+    exception_type: Type
 
     def __init__(self, parent: Self = None):
         self._parent = parent
         self._variable_types = {}
         self._functional_types = {}
+        self.exception_type = None
 
     def save_variable_type(self, name: str, type: Type) -> None:
         if name in self._variable_types:
@@ -34,3 +36,11 @@ class TypeContext:
         if not type and self._parent:
             return self._parent.resolve_functional_type(name)
         return type
+
+    def save_exception_type(self, exception_type: Type) -> None:
+        self.exception_type = exception_type
+
+    def resolve_exception_type(self) -> Type | None:
+        if not self.exception_type and self._parent:
+            return self._parent.resolve_exception_type()
+        return self.exception_type

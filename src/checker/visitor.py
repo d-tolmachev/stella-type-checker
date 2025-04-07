@@ -5,9 +5,10 @@ from antlr.stellaParser import stellaParser
 from antlr.stellaParserVisitor import stellaParserVisitor
 from error.errorKind import ErrorKind
 from error.errorManager import ErrorManager
+from extension.extensionManager import ExtensionManager
+from type.type import FunctionalType, Type
 from type.typeContext import TypeContext
 from type.typeInferer import TypeInferer
-from type.type import FunctionalType, Type
 from type.typeVisitor import get_type
 
 
@@ -34,6 +35,8 @@ class StructureVisitor(stellaParserVisitor):
     def visitDeclFun(self, ctx: stellaParser.DeclFunContext) -> None:
         if ctx and self.__main_function_name == ctx.name.text:
             self._is_main_found = True
+            if len(ctx.paramDecls) != 1:
+                self._error_manager.register_error(ErrorKind.ERROR_INCORRECT_ARITY_OF_MAIN, len(ctx.paramDecls))
         return super().visitDeclFun(ctx)
 
 
@@ -51,6 +54,8 @@ class TopLevelDeclarationVisitor(stellaParserVisitor):
         return None
 
     def visitDeclFun(self, ctx: stellaParser.DeclFunContext) -> None:
+        if not ctx.paramDecls:
+            return None
         param_type: Type = get_type(ctx._paramDecl.paramType)
         return_type: Type = get_type(ctx.returnType)
         functional_type: FunctionalType = FunctionalType(param_type, return_type)
@@ -60,16 +65,24 @@ class TopLevelDeclarationVisitor(stellaParserVisitor):
 
 class TypeVisitor(stellaParserVisitor):
     _error_manager: ErrorManager
+    _extension_manager: ExtensionManager
     _type_context: TypeContext
 
-    def __init__(self, error_manager: ErrorManager, parent_type_context: TypeContext = None):
+    def __init__(self, error_manager: ErrorManager, extension_manager: ExtensionManager, parent_type_context: TypeContext = None):
         self._error_manager = error_manager
+        self._extension_manager = extension_manager
         self._type_context = TypeContext(parent_type_context)
 
     def visitProgram(self, ctx: stellaParser.ProgramContext):
         top_level_declaration_visitor: TopLevelDeclarationVisitor = TopLevelDeclarationVisitor(self._type_context)
         top_level_declaration_visitor.visitProgram(ctx)
-        return super().visitProgram(ctx)
+        for decl in ctx.decls:
+            match decl:
+                case stellaParser.DeclFunContext():
+                    self.visitDeclFun(decl)
+                case stellaParser.DeclExceptionTypeContext():
+                    self.visitDeclExceptionType(decl)
+        return None
 
     def visitDeclFun(self, ctx: stellaParser.DeclFunContext) -> None:
         functional_type: FunctionalType | None = self._type_context.resolve_functional_type(ctx.name.text)
@@ -81,9 +94,13 @@ class TypeVisitor(stellaParserVisitor):
         top_level_declaration_visitor: TopLevelDeclarationVisitor = TopLevelDeclarationVisitor(functional_type_context)
         for child in ctx.children:
             top_level_declaration_visitor.visit(child)
-        functional_type_visitor: TypeVisitor = TypeVisitor(self._error_manager, functional_type_context)
+        functional_type_visitor: TypeVisitor = TypeVisitor(self._error_manager, self._extension_manager, functional_type_context)
         for child in ctx.children:
             functional_type_visitor.visit(child)
-        type_inferer: TypeInferer = TypeInferer(self._error_manager, functional_type_context)
+        type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, functional_type_context)
         type_inferer.visit_expression(ctx.returnExpr, expected_return_type)
+        return None
+
+    def visitDeclExceptionType(self, ctx: stellaParser.DeclExceptionTypeContext) -> None:
+        self._type_context.save_exception_type(get_type(ctx.exceptionType))
         return None

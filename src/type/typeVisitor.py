@@ -1,5 +1,5 @@
 from antlr.stellaParser import stellaParser
-from type.type import BoolType, FunctionalType, ListType, NatType, RecordType, SumType, TupleType, Type, UnitType, UnknownType, VariantType
+from type.type import BoolType, BottomType, FunctionalType, ListType, NatType, RecordType, RefType, SumType, TopType, TupleType, Type, UnitType, UnknownType, VariantType
 
 
 def get_type(ctx: stellaParser.StellatypeContext) -> Type:
@@ -22,6 +22,12 @@ def get_type(ctx: stellaParser.StellatypeContext) -> Type:
             return __visit_variant_type(ctx)
         case stellaParser.TypeListContext():
             return __visit_list_type(ctx)
+        case stellaParser.TypeRefContext():
+            return __visit_ref_type(ctx)
+        case stellaParser.TypeTopContext():
+            return __visit_top_type(ctx)
+        case stellaParser.TypeBottomContext():
+            return __visit_bottom_type(ctx)
         case stellaParser.TypeParensContext():
             return get_type(ctx.type_)
         case _:
@@ -63,3 +69,12 @@ def __visit_variant_type(ctx: stellaParser.TypeVariantContext) -> VariantType:
 
 def __visit_list_type(ctx: stellaParser.TypeListContext) -> ListType:
     return ListType(get_type(ctx.type_))
+
+def __visit_ref_type(ctx: stellaParser.TypeRefContext) -> RefType:
+    return RefType(get_type(ctx.type_))
+
+def __visit_top_type(ctx: stellaParser.TypeTopContext) -> TopType:
+    return TopType()
+
+def __visit_bottom_type(ctx: stellaParser.TypeBottomContext) -> BottomType:
+    return BottomType()
