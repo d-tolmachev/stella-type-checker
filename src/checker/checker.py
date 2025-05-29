@@ -5,6 +5,7 @@ from checker.visitor import StructureVisitor, TypeVisitor
 from error.errorManager import ErrorManager
 from extension.extensionKind import ExtensionKind
 from extension.extensionManager import ExtensionManager
+from unification.unifySolver import UnifySolver
 
 
 class Checker(metaclass = ABCMeta):
@@ -26,11 +27,13 @@ class StructureChecker(Checker):
 
 class TypeChecker(Checker):
     _extension_manager: ExtensionManager
+    _unify_solver: UnifySolver
     _visitor: TypeVisitor
 
     def __init__(self, error_manager: ErrorManager):
         self._extension_manager = ExtensionManager()
-        self._visitor = TypeVisitor(error_manager, self._extension_manager)
+        self._unify_solver = UnifySolver()
+        self._visitor = TypeVisitor(error_manager, self._extension_manager, self._unify_solver)
 
     def check(self, program_context: stellaParser.ProgramContext) -> None:
         for extension_context in program_context.extensions:

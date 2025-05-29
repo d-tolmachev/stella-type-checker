@@ -5,22 +5,24 @@ from antlr4 import ParserRuleContext
 from antlr.stellaParser import stellaParser
 from error.errorKind import ErrorKind
 from error.errorManager import ErrorManager
-from extension.extensionKind import ExtensionKind
 from extension.extensionManager import ExtensionManager
-from type.exhaustivenessValidator import ExhaustivenessValidator
-from type.type import BoolType, BottomType, FunctionalType, ListType, NatType, RecordType, RefType, SumType, TopType, TupleType, Type, UnitType, UnknownType, VariantType
+from type.exhaustivenessValidator import validate_patterns_exhaustiveness
+from type.type import BoolType, BottomType, FunctionalType, GenericType, ListType, NatType, RecordType, RefType, SumType, TopType, TupleType, Type, TypeVariable, UnitType, UniversalWrapperType, UnknownType, VariantType
 from type.typeContext import TypeContext
 from type.typeVisitor import get_type
+from unification.unifySolver import UnifySolver
 
 
 class TypeInferer:
     _error_manager: ErrorManager
     _extension_manager: ExtensionManager
+    _unify_solver: UnifySolver
     _type_context: TypeContext
 
-    def __init__(self, error_manager: ErrorManager, extension_manager: ExtensionManager, parent_type_context: TypeContext = None):
+    def __init__(self, error_manager: ErrorManager, extension_manager: ExtensionManager, unify_solver: UnifySolver, parent_type_context: TypeContext = None):
         self._error_manager = error_manager
         self._extension_manager = extension_manager
+        self._unify_solver = unify_solver
         self._type_context = TypeContext(parent_type_context)
 
     def visit_expression(self, ctx: stellaParser.ExprContext, expected_type: Type) -> Type:
@@ -41,10 +43,14 @@ class TypeInferer:
                 actual_type: Type = self._visit_if(ctx, expected_type)
             case stellaParser.AbstractionContext():
                 actual_type: FunctionalType = self._visit_abstraction(ctx, expected_type)
+            case stellaParser.TypeAbstractionContext():
+                actual_type: UniversalWrapperType = self._visit_type_abstraction(ctx, expected_type)
             case stellaParser.VarContext():
                 actual_type: Type = self._visit_var(ctx, expected_type)
             case stellaParser.ApplicationContext():
                 actual_type: Type = self._visit_application(ctx, expected_type)
+            case stellaParser.TypeApplicationContext():
+                actual_type: FunctionalType = self._visit_type_application(ctx, expected_type)
             case stellaParser.ConstUnitContext():
                 actual_type: UnitType = self._visit_const_unit(ctx)
             case stellaParser.SequenceContext():
@@ -63,12 +69,14 @@ class TypeInferer:
                 actual_type: Type = self._visit_dot_record(ctx, expected_type)
             case stellaParser.MatchContext():
                 actual_type: Type = self._visit_match(ctx, expected_type)
+            case stellaParser.PatternContext():
+                actual_type: Type = self._visit_pattern(ctx, expected_type)
             case stellaParser.InlContext():
-                actual_type: Type = self._visit_inl(ctx, expected_type)
+                actual_type: SumType = self._visit_inl(ctx, expected_type)
             case stellaParser.InrContext():
-                actual_type: Type = self._visit_inr(ctx, expected_type)
+                actual_type: SumType = self._visit_inr(ctx, expected_type)
             case stellaParser.VariantContext():
-                actual_type: VariantType = self._visit_variant(ctx, expected_type)
+                actual_type: SumType = self._visit_variant(ctx, expected_type)
             case stellaParser.NatRecContext():
                 actual_type: Type = self._visit_nat_rec(ctx, expected_type)
             case stellaParser.FixContext():
@@ -153,7 +161,7 @@ class TypeInferer:
         return else_type
 
     def _visit_abstraction(self, ctx: stellaParser.AbstractionContext, expected_type: Type) -> FunctionalType:
-        if expected_type and not (isinstance(expected_type, FunctionalType) or isinstance(expected_type, TopType)):
+        if expected_type and not (isinstance(expected_type, FunctionalType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
             functional_type: FunctionalType = self._visit_abstraction(ctx, None)
             if not functional_type:
                 return None
@@ -161,14 +169,48 @@ class TypeInferer:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_LAMBDA, expected_type, functional_type, ctx)
             return None
         param_type: Type = get_type(ctx._paramDecl.paramType)
+        if not self._is_known_type(param_type):
+            return None
         functional_type_context: TypeContext = TypeContext(self._type_context)
         functional_type_context.save_variable_type(ctx._paramDecl.name.text, param_type)
-        functional_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, functional_type_context)
-        return_type: Type = functional_type_inferer.visit_expression(ctx.returnExpr, expected_type.ret if isinstance(expected_type, FunctionalType) else None)
+        functional_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, self._unify_solver, functional_type_context)
+        match expected_type:
+            case TypeVariable():
+                target_type: TypeVariable = TypeVariable()
+                self._unify_solver.add_constraint(expected_type, FunctionalType(param_type, target_type), ctx)
+            case FunctionalType():
+                target_type: Type = expected_type.ret
+            case _:
+                target_type: Type = None
+        return_type: Type = functional_type_inferer.visit_expression(ctx.returnExpr, target_type)
         if not return_type:
             return None
         actual_type: Type = FunctionalType(param_type, return_type)
         return self._validate_types(actual_type, expected_type, ctx)
+
+    def _visit_type_abstraction(self, ctx: stellaParser.TypeAbstractionContext, expected_type: Type) -> UniversalWrapperType:
+        match expected_type:
+            case UniversalWrapperType():
+                target_type: FunctionalType = expected_type.inner_type
+            case FunctionalType():
+                target_type: FunctionalType = expected_type
+            case _:
+                functional_type: Type = self.visit_expression(ctx, None)
+                if not functional_type:
+                    return None
+                if self._error_manager:
+                    self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, expected_type, actual_type, ctx)
+                return None
+        type_params: list[GenericType] = [GenericType(generic.text) for generic in ctx.generics]
+        functional_type_context: TypeContext = TypeContext(self._type_context)
+        for type_param in type_params:
+            functional_type_context.save_generic_type(type_param.name, type_param)
+        functional_type_inferrer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, self._unify_solver, functional_type_context)
+        inner_type: FunctionalType = functional_type_inferrer.visit_expression(ctx.expr_, target_type)
+        if not inner_type:
+            return None
+        actual_type: UniversalWrapperType = UniversalWrapperType(type_params, inner_type)
+        return actual_type
 
     def _visit_var(self, ctx: stellaParser.VarContext, expected_type: Type) -> Type:
         actual_type: Type | None = self._type_context.resolve_variable_type(ctx.name.text)
@@ -178,16 +220,19 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNDEFINED_VARIABLE, ctx.name.text)
             return None
-        if expected_type and not actual_type.is_subtype_of(expected_type, self._extension_manager.is_structural_subtyping()):
-            if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_SUBTYPE if self._extension_manager.is_structural_subtyping() else ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, expected_type, actual_type, ctx)
-            return None
-        return actual_type
+        return self._validate_types(actual_type, expected_type, ctx)
 
     def _visit_application(self, ctx: stellaParser.ApplicationContext, expected_type: Type) -> Type:
         functional_type: Type = self.visit_expression(ctx.fun, None)
         if not functional_type:
             return None
+        if self._extension_manager.is_type_reconstruction():
+            param_type: Type = self.visit_expression(ctx.args[0], None)
+            if not param_type:
+                return None
+            return_type: Type = expected_type if expected_type else TypeVariable()
+            self._unify_solver.add_constraint(functional_type, FunctionalType(param_type, return_type), ctx)
+            return return_type
         if not isinstance(functional_type, FunctionalType):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_NOT_A_FUNCTION, expected_type, functional_type, ctx.fun)
@@ -195,6 +240,28 @@ class TypeInferer:
         if not self.visit_expression(ctx.args[0], functional_type.param):
             return None
         actual_type: Type = functional_type.ret
+        return self._validate_types(actual_type, expected_type, ctx)
+
+    def _visit_type_application(self, ctx: stellaParser.TypeApplicationContext, expected_type: Type) -> FunctionalType:
+        functional_type: FunctionalType = self.visit_expression(ctx.fun, None)
+        if not functional_type:
+            return None
+        if not isinstance(functional_type, UniversalWrapperType) or not isinstance(functional_type.inner_type, FunctionalType):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_NOT_A_GENERIC_FUNCTION, functional_type, ctx)
+            return None
+        type_params: list[Type] = [get_type(type) for type in ctx.types]
+        if len(functional_type.type_params) != len(type_params):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_INCORRECT_NUMBER_OF_TYPE_ARGUMENTS, len(type_params), len(functional_type.type_params))
+            return None
+        substitution: dict[GenericType, Type] = {generic_type_param: type_param for generic_type_param, type_param in zip(functional_type.type_params, type_params)}
+        actual_type: FunctionalType = functional_type.inner_type.with_substitution(substitution)
+        unresolved_type: Type = actual_type.get_first_unresolved_type()
+        if unresolved_type:
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNDEFINED_TYPE_VARIABLE, unresolved_type)
+            return None
         return self._validate_types(actual_type, expected_type, ctx)
 
     def _visit_const_unit(self, ctx: stellaParser.ConstUnitContext) -> UnitType:
@@ -207,12 +274,10 @@ class TypeInferer:
 
     def _visit_type_asc(self, ctx: stellaParser.TypeAscContext, expected_type: Type) -> Type:
         target_type: Type = get_type(ctx.type_)
-        actual_type: Type = self.visit_expression(ctx.expr_, expected_type if expected_type else target_type)
-        if not actual_type:
+        if not self._is_known_type(target_type):
             return None
-        if not actual_type.is_subtype_of(target_type, self._extension_manager.is_structural_subtyping()):
-            if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, target_type, actual_type, ctx.expr_)
+        actual_type: Type = self.visit_expression(ctx.expr_, expected_type if expected_type and not self._extension_manager.is_type_reconstruction() else target_type)
+        if not actual_type:
             return None
         return self._validate_types(actual_type, expected_type, ctx)
 
@@ -225,11 +290,11 @@ class TypeInferer:
             expression_context = expression_context.pattern_
         let_type_context: TypeContext = TypeContext(self._type_context)
         let_type_context.save_variable_type(expression_context.name.text, expression_type)
-        let_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, let_type_context)
+        let_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, self._unify_solver, let_type_context)
         return let_type_inferer.visit_expression(ctx.body, expected_type)
 
     def _visit_tuple(self, ctx: stellaParser.TupleContext, expected_type: Type) -> TupleType:
-        if expected_type and not (isinstance(expected_type, TupleType) or isinstance(expected_type, TopType)):
+        if expected_type and not (isinstance(expected_type, TupleType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
             tuple_type: TupleType = self._visit_tuple(ctx, None)
             if not tuple_type:
                 return None
@@ -243,12 +308,24 @@ class TypeInferer:
                 return None
             types.append(expression_type)
         actual_type: TupleType = TupleType(types)
+        if self._extension_manager.is_type_reconstruction():
+            self._unify_solver.add_constraint(expected_type, actual_type, ctx)
         return actual_type
 
     def _visit_dot_tuple(self, ctx: stellaParser.DotTupleContext, expected_type: Type) -> Type:
         tuple_type: Type = self.visit_expression(ctx.expr_, None)
         if not tuple_type:
             return None
+        if self._extension_manager.is_type_reconstruction():
+            if not ctx.index.text.isnumeric() or int(ctx.index.text) <= 0:
+                if self._error_manager:
+                    self._error_manager.register_error(ErrorKind.ERROR_TUPLE_INDEX_OUT_OF_BOUNDS, ctx.index.text, -1)
+                return None
+            tuple_arity: int = tuple_type.arity if isinstance(tuple_type, TupleType) else int(ctx.index.text)
+            target_type: TupleType = TupleType([TypeVariable() for _ in range(tuple_arity)])
+            self._unify_solver.add_constraint(tuple_type, target_type, ctx)
+            actual_type: Type = target_type.types[int(ctx.index.text) - 1]
+            return self._validate_types(actual_type, expected_type, ctx)
         if not isinstance(tuple_type, TupleType):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_NOT_A_TUPLE, tuple_type, ctx)
@@ -261,7 +338,7 @@ class TypeInferer:
         return self._validate_types(actual_type, expected_type, ctx)
 
     def _visit_record(self, ctx: stellaParser.RecordContext, expected_type: Type) -> RecordType:
-        if expected_type and not (isinstance(expected_type, RecordType) or isinstance(expected_type, TopType)):
+        if expected_type and not (isinstance(expected_type, RecordType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
             record_type: RecordType = self._visit_record(ctx, None)
             if not record_type:
                 return None
@@ -277,6 +354,8 @@ class TypeInferer:
                 return None
             types.append(type)
         actual_type: RecordType = RecordType(labels, types)
+        if self._extension_manager.is_type_reconstruction():
+            self._unify_solver.add_constraint(expected_type, actual_type, ctx)
         return actual_type
 
     def _visit_dot_record(self, ctx: stellaParser.DotRecordContext, expected_type: Type) -> Type:
@@ -303,51 +382,252 @@ class TypeInferer:
                 self._error_manager.register_error(ErrorKind.ERROR_ILLEGAL_EMPTY_MATCHING, ctx)
             return None
         patterns: list[stellaParser.PatternContext] = [case_context.pattern_ for case_context in ctx.cases]
-        exhaustiveness_validator: ExhaustivenessValidator = ExhaustivenessValidator(self._error_manager)
-        if not exhaustiveness_validator.are_pattern_types_valid(patterns, expression_type):
-            return None
-        if not exhaustiveness_validator.are_patterns_exhaustive(patterns, expression_type):
+        case_types: list[Type] = []
+        for case_context in ctx.cases:
+            case_type_context: TypeContext = TypeContext(self._type_context)
+            case_type_inferrer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, self._unify_solver, case_type_context)
+            if not case_type_inferrer._visit_pattern(case_context.pattern_, expression_type):
+                return None
+            case_types.append(case_type_inferrer.visit_expression(case_context.expr_, expected_type))
+        if not validate_patterns_exhaustiveness(patterns, expression_type):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_NONEXHAUSTIVE_MATCH_PATTERNS, expression_type)
             return None
-        actual_type: Type = None
-        for case_context in ctx.cases:
-            case_type: Type = self._visit_match_case(case_context, expression_type, expected_type)
-            if not case_type:
-                return None
-            if actual_type and case_type != actual_type:
+        actual_type: Type = case_types[0]
+        for case_type in case_types:
+            if not self._validate_types(actual_type, case_type, ctx):
                 if self._error_manager:
-                    self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, actual_type, case_type, case_context.expr_)
+                    self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, actual_type, case_type, ctx)
                 return None
-            actual_type = case_type
         return actual_type
 
+    def _visit_pattern(self, ctx: stellaParser.PatternContext, expected_type: Type) -> Type:
+        match ctx:
+            case stellaParser.PatternFalseContext():
+                actual_type: BoolType = self._visit_false_pattern(ctx)
+            case stellaParser.PatternTrueContext():
+                actual_type: BoolType = self._visit_true_pattern(ctx)
+            case stellaParser.PatternIntContext():
+                actual_type: NatType = self._visit_int_pattern(ctx)
+            case stellaParser.PatternSuccContext():
+                actual_type: NatType = self._visit_succ_pattern(ctx)
+            case stellaParser.PatternVarContext():
+                actual_type: Type = self._visit_var_pattern(ctx, expected_type)
+            case stellaParser.PatternUnitContext():
+                actual_type: UnitType = self._visit_unit_pattern(ctx)
+            case stellaParser.PatternAscContext():
+                actual_type: Type = self._visit_asc_pattern(ctx, expected_type)
+            case stellaParser.PatternTupleContext():
+                actual_type: TupleType = self._visit_tuple_pattern(ctx, expected_type)
+            case stellaParser.PatternRecordContext():
+                actual_type: RecordType = self._visit_record_pattern(ctx, expected_type)
+            case stellaParser.PatternInlContext():
+                actual_type: SumType = self._visit_inl_pattern(ctx, expected_type)
+            case stellaParser.PatternInrContext():
+                actual_type: SumType = self._visit_inr_pattern(ctx, expected_type)
+            case stellaParser.PatternVariantContext():
+                actual_type: VariantType = self._visit_variant_pattern(ctx, expected_type)
+            case stellaParser.PatternListContext():
+                actual_type: ListType = self._visit_list_pattern(ctx, expected_type)
+            case stellaParser.PatternConsContext():
+                actual_type: ListType = self._visit_cons_pattern(ctx, expected_type)
+            case stellaParser.ParenthesisedPatternContext():
+                actual_type: Type = self._visit_pattern(ctx.pattern_, expected_type)
+            case _:
+                actual_type: Type = None
+        if not actual_type:
+            return None
+        return self._validate_patterns(actual_type, expected_type, ctx)
+
+    def _visit_false_pattern(self, ctx: stellaParser.PatternFalseContext) -> BoolType:
+        return BoolType()
+
+    def _visit_true_pattern(self, ctx: stellaParser.PatternTrueContext) -> BoolType:
+        return BoolType()
+
+    def _visit_int_pattern(self, ctx: stellaParser.PatternIntContext) -> NatType:
+        return NatType()
+
+    def _visit_succ_pattern(self, ctx: stellaParser.PatternSuccContext) -> NatType:
+        return NatType()
+
+    def _visit_var_pattern(self, ctx: stellaParser.PatternVarContext, expected_type: Type) -> Type:
+        self._type_context.save_variable_type(ctx.name.text, expected_type)
+        return expected_type
+
+    def _visit_unit_pattern(self, ctx: stellaParser.PatternUnitContext) -> UnitType:
+        return UnitType()
+
+    def _visit_asc_pattern(self, ctx: stellaParser.PatternAscContext, expected_type: Type) -> Type:
+        target_type: Type = get_type(ctx.type_)
+        if not self._is_known_type(target_type):
+            return None
+        actual_type: Type = self._validate_patterns(target_type, expected_type, ctx)
+        if not actual_type:
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_PATTERN_TYPE, ctx)
+            return None
+        return self._visit_pattern(ctx.pattern_, actual_type)
+
+    def _visit_tuple_pattern(self, ctx: stellaParser.PatternTupleContext, expected_type: Type) -> TupleType:
+        if expected_type and not ((isinstance(expected_type, TupleType) and len(ctx.patterns) == len(expected_type.types)) or isinstance(expected_type, TopType)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        for index, tuple_pattern in enumerate(ctx.patterns):
+            self._visit_pattern(tuple_pattern, expected_type.types[index])
+        return expected_type
+
+    def _visit_record_pattern(self, ctx: stellaParser.PatternRecordContext, expected_type: Type) -> RecordType:
+        if expected_type and not ((isinstance(expected_type, RecordType) and {record_pattern.label.text for record_pattern in ctx.patterns} == set(expected_type.labels)) or isinstance(expected_type, TopType)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        labels_indices: dict[str, int] = {label: index for index, label in enumerate(expected_type.labels)}
+        for labelled_pattern in ctx.patterns:
+            label_type: Type = expected_type.types[labels_indices[labelled_pattern.label.text]]
+            self._visit_pattern(labelled_pattern.pattern_, label_type)
+        return expected_type
+
+    def _visit_inl_pattern(self, ctx: stellaParser.PatternInlContext, expected_type: Type) -> SumType:
+        if expected_type and not (isinstance(expected_type, SumType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        match expected_type:
+            case TypeVariable():
+                sum_type: SumType = SumType(TypeVariable(), TypeVariable())
+                self._unify_solver.add_constraint(expected_type, sum_type, ctx)
+            case SumType():
+                sum_type: SumType = expected_type
+            case _:
+                sum_type: SumType = None
+        if not sum_type:
+            return None
+        actual_type: Type = self._visit_pattern(ctx.pattern_, sum_type.left)
+        if not actual_type:
+            return None
+        return expected_type
+
+    def _visit_inr_pattern(self, ctx: stellaParser.PatternInrContext, expected_type: Type) -> SumType:
+        if expected_type and not (isinstance(expected_type, SumType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        match expected_type:
+            case TypeVariable():
+                sum_type: SumType = SumType(TypeVariable(), TypeVariable())
+                self._unify_solver.add_constraint(expected_type, sum_type, ctx)
+            case SumType():
+                sum_type: SumType = expected_type
+            case _:
+                sum_type: SumType = None
+        if not sum_type:
+            return None
+        actual_type: Type = self._visit_pattern(ctx.pattern_, sum_type.right)
+        if not actual_type:
+            return None
+        return expected_type
+
+    def _visit_variant_pattern(self, ctx: stellaParser.PatternVariantContext, expected_type: Type) -> VariantType:
+        if expected_type and not ((isinstance(expected_type, VariantType) and ctx.label.text in expected_type.labels) or isinstance(expected_type, TopType)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        expression_type: Type = expected_type.types[expected_type.labels.index(ctx.label.text)]
+        actual_type: Type = self._visit_pattern(ctx.pattern_, expression_type)
+        if not actual_type:
+            return None
+        return expected_type
+
+    def _visit_list_pattern(self, ctx: stellaParser.PatternListContext, expected_type: Type) -> ListType:
+        if expected_type and not (isinstance(expected_type, ListType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        match expected_type:
+            case TypeVariable():
+                list_type: ListType = ListType(TypeVariable())
+                self._unify_solver.add_constraint(expected_type, list_type, ctx)
+            case ListType():
+                list_type: ListType = expected_type
+            case _:
+                list_type: ListType = None
+        if not list_type:
+            return None
+        for list_pattern in ctx.patterns:
+            self._visit_pattern(list_pattern, list_type.type)
+        return expected_type
+
+    def _visit_cons_pattern(self, ctx: stellaParser.PatternConsContext, expected_type: Type) -> ListType:
+        if expected_type and not (isinstance(expected_type, ListType) or isinstance(expected_type, TopType) or isinstance(expected_type, TypeVariable)):
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx, expected_type)
+            return None
+        match expected_type:
+            case TypeVariable():
+                list_type: ListType = ListType(TypeVariable())
+                self._unify_solver.add_constraint(expected_type, list_type, ctx)
+            case ListType():
+                list_type: ListType = expected_type
+            case _:
+                list_type: ListType = None
+        if not list_type:
+            return None
+        self._visit_pattern(ctx.head, list_type.type)
+        self._visit_pattern(ctx.tail, list_type)
+        return expected_type
+
     def _visit_inl(self, ctx: stellaParser.InlContext, expected_type: Type) -> SumType:
-        if not expected_type:
+        if not expected_type and not self._extension_manager.is_type_reconstruction():
             if self._extension_manager.is_ambiguous_type_as_bottom():
                 return BottomType()
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_SUM_TYPE, ctx)
             return None
-        if not isinstance(expected_type, SumType):
+        if self._extension_manager.is_type_reconstruction():
+            expression_type: Type = self.visit_expression(ctx.expr_, None)
+            if not expression_type:
+                return None
+            actual_type: SumType = SumType(expression_type, TypeVariable())
+            return actual_type
+        if not (isinstance(expected_type, SumType) or isinstance(expected_type, TopType)):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_INJECTION, expected_type)
             return None
+        if isinstance(expected_type, TopType):
+            expression_type: Type = self.visit_expression(ctx.expr_, None)
+            if not expression_type:
+                return None
+            actual_type: SumType = SumType(expression_type, BottomType())
+            return actual_type
         if not self.visit_expression(ctx.expr_, expected_type.left):
             return None
         return expected_type
 
     def _visit_inr(self, ctx: stellaParser.InrContext, expected_type: Type) -> SumType:
-        if not expected_type:
+        if not expected_type and not self._extension_manager.is_type_reconstruction():
             if self._extension_manager.is_ambiguous_type_as_bottom():
                 return BottomType()
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_SUM_TYPE, ctx)
             return None
-        if not isinstance(expected_type, SumType):
+        if self._extension_manager.is_type_reconstruction():
+            expression_type: Type = self.visit_expression(ctx.expr_, None)
+            if not expression_type:
+                return None
+            actual_type: SumType = SumType(TypeVariable(), expression_type)
+            return actual_type
+        if not (isinstance(expected_type, SumType) or isinstance(expected_type, TopType)):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_INJECTION, expected_type)
             return None
+        if isinstance(expected_type, TopType):
+            expression_type: Type = self.visit_expression(ctx.expr_, None)
+            if not expression_type:
+                return None
+            actual_type: SumType = SumType(BottomType(), expression_type)
+            return actual_type
         if not self.visit_expression(ctx.expr_, expected_type.right):
             return None
         return expected_type
@@ -359,7 +639,7 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_VARIANT_TYPE, ctx)
             return None
-        if not isinstance(expected_type, VariantType):
+        if not (isinstance(expected_type, VariantType) or isinstance(expected_type, TopType)):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_VARIANT, expected_type)
             return None
@@ -383,7 +663,7 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, FunctionalType(None, None, False), step_type, ctx.step)
             return None
-        if not isinstance(step_type.param, NatType):
+        if not isinstance(step_type.param, NatType) and not self._extension_manager.is_type_reconstruction():
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_PARAMETER, NatType(), step_type.param, ctx.step.paramDecl if isinstance(ctx.step, stellaParser.AbstractionContext) else ctx.step)
             return None
@@ -398,6 +678,10 @@ class TypeInferer:
         return initial_type
 
     def _visit_fix(self, ctx: stellaParser.FixContext, expected_type: Type) -> Type:
+        if self._extension_manager.is_type_reconstruction():
+            target_type: Type = expected_type if expected_type else TypeVariable()
+            self.visit_expression(ctx.expr_, FunctionalType(target_type, target_type))
+            return target_type
         functional_type: Type = self.visit_expression(ctx.expr_, None)
         if not functional_type:
             return None
@@ -408,7 +692,7 @@ class TypeInferer:
         return functional_type.ret
 
     def _visit_list(self, ctx: stellaParser.ListContext, expected_type: Type) -> ListType:
-        if expected_type and not (isinstance(expected_type, ListType) or isinstance(expected_type, TopType)):
+        if expected_type and not (isinstance(expected_type, ListType) or isinstance(expected_type, TopType)) and not self._extension_manager.is_type_reconstruction():
             list_type: ListType = self._visit_list(ctx, None)
             if not list_type:
                 return None
@@ -427,19 +711,30 @@ class TypeInferer:
             if not type:
                 return None
             expression_types.append(type)
-        list_type: ListType = expected_type
+        list_type: ListType = expected_type if isinstance(expected_type, ListType) else None
         if not list_type and expression_types:
             list_type = ListType(expression_types[0])
         if not list_type:
-            return None
+            list_type = ListType(BottomType())
+        if self._extension_manager.is_type_reconstruction():
+            for index, expression_type in enumerate(expression_types):
+                self._unify_solver.add_constraint(list_type.type, expression_type, ctx.exprs[index])
+            return self._validate_types(list_type, expected_type, ctx)
         for index, expression_type in enumerate(expression_types):
             if expression_type != list_type.type:
                 if self._error_manager:
                     self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, list_type, expression_type, ctx.exprs[index])
                 return None
-        return list_type
+        return self._validate_types(list_type, expected_type, ctx)
 
     def _visit_cons_list(self, ctx: stellaParser.ConsListContext, expected_type: Type) -> ListType:
+        if self._extension_manager.is_type_reconstruction():
+            actual_type: ListType = ListType(TypeVariable())
+            if not self.visit_expression(ctx.head, actual_type.type):
+                return None
+            if not self.visit_expression(ctx.tail, actual_type):
+                return None
+            return self._validate_types(actual_type, expected_type, ctx)
         if expected_type and not (isinstance(expected_type, ListType) or isinstance(expected_type, TopType)):
             list_type: ListType = self._visit_cons_list(ctx, None)
             if not list_type:
@@ -455,13 +750,9 @@ class TypeInferer:
         actual_type: ListType = ListType(head_type)
         if not self.visit_expression(ctx.tail, actual_type):
             return None
-        return actual_type
+        return self._validate_types(actual_type, expected_type, ctx)
 
     def _visit_is_empty(self, ctx: stellaParser.IsEmptyContext, expected_type: Type) -> BoolType:
-        if expected_type and not (isinstance(expected_type, BoolType) or isinstance(expected_type, TopType)):
-            if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, expected_type, BoolType(), ctx)
-            return None
         list_type: Type = self.visit_expression(ctx.expr(), None)
         if not list_type:
             return None
@@ -469,7 +760,8 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_NOT_A_LIST, list_type, ctx.expr())
             return None
-        return BoolType()
+        actual_type: BoolType = BoolType()
+        return self._validate_types(actual_type, expected_type, ctx)
 
     def _visit_head(self, ctx: stellaParser.HeadContext, expected_type: Type) -> Type:
         list_type: Type = self.visit_expression(ctx.list_, None)
@@ -520,7 +812,7 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_REFERENCE_TYPE, ctx)
             return None
-        if not isinstance(expected_type, RefType):
+        if not (isinstance(expected_type, RefType) or isinstance(expected_type, TopType)):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_MEMORY_ADDRESS, ctx, expected_type)
             return None
@@ -574,20 +866,25 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_THROW_TYPE, ctx)
             return None
-        exception_type: Type = self._type_context.resolve_exception_type()
+        exception_type: Type | None = self._type_context.resolve_exception_type()
         if not exception_type:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_EXCEPTION_TYPE_NOT_DECLARED)
             return None
         if not self.visit_expression(ctx.expr_, exception_type):
             return None
-        return expected_type
+        actual_type: Type = expected_type if expected_type else BottomType()
+        return actual_type
 
     def _visit_try_with(self, ctx: stellaParser.TryWithContext, expected_type: Type) -> Type:
+        if not self._type_context.resolve_exception_type():
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_EXCEPTION_TYPE_NOT_DECLARED)
+            return None
         try_type: Type = self.visit_expression(ctx.tryExpr, expected_type)
         if not try_type:
             return None
-        with_type: Type = self.visit_expression(ctx.fallbackExpr, try_type)
+        with_type: Type = self.visit_expression(ctx.fallbackExpr, expected_type)
         if not with_type:
             return None
         if try_type != with_type:
@@ -597,16 +894,19 @@ class TypeInferer:
         return with_type
 
     def _visit_try_catch(self, ctx: stellaParser.TryCatchContext, expected_type: Type) -> Type:
-        exhaustiveness_validator: ExhaustivenessValidator = ExhaustivenessValidator(self._error_manager)
-        exception_type: Type = self._type_context.resolve_exception_type()
-        if not exhaustiveness_validator.is_pattern_type_valid(ctx.pat, exception_type):
+        exception_type: Type | None = self._type_context.resolve_exception_type()
+        if not exception_type:
             if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, ctx.pat, exception_type)
+                self._error_manager.register_error(ErrorKind.ERROR_EXCEPTION_TYPE_NOT_DECLARED)
             return None
         try_type: Type = self.visit_expression(ctx.tryExpr, expected_type)
         if not try_type:
             return None
-        catch_type: Type = self.visit_expression(ctx.fallbackExpr, try_type)
+        catch_type_context: TypeContext = TypeContext(self._type_context)
+        catch_type_inferrer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, self._unify_solver, catch_type_context)
+        if not catch_type_inferrer.visit_expression(ctx.pat, exception_type):
+            return None
+        catch_type: Type = catch_type_inferrer.visit_expression(ctx.fallbackExpr, expected_type)
         if not catch_type:
             return None
         if try_type != catch_type:
@@ -619,11 +919,16 @@ class TypeInferer:
         if not self.visit_expression(ctx.expr_, None):
             return None
         actual_type: Type = get_type(ctx.type_)
+        if not self._is_known_type(actual_type):
+            return None
         return self._validate_types(actual_type, expected_type, ctx)
 
     def _validate_types(self, actual_type: Type, expected_type: Type, expression: ParserRuleContext) -> Type:
         if not expected_type:
             return actual_type
+        if self._extension_manager.is_type_reconstruction():
+            self._unify_solver.add_constraint(expected_type, actual_type, expression)
+            return expected_type
         if isinstance(actual_type, TupleType) and isinstance(expected_type, TupleType) and not self._validate_tuples(actual_type, expected_type, expression):
             return None
         if isinstance(actual_type, RecordType) and isinstance(expected_type, RecordType) and not self._validate_records(actual_type, expected_type, expression):
@@ -636,24 +941,27 @@ class TypeInferer:
             return None
         return expected_type
 
-    def _visit_match_case(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        match ctx.pattern_:
-            case stellaParser.PatternVarContext():
-                return self._visit_var_pattern(ctx, expression_type, expected_type)
-            case stellaParser.PatternTupleContext():
-                return self._visit_tuple_pattern(ctx, expression_type, expected_type)
-            case stellaParser.PatternRecordContext():
-                return self._visit_record_pattern(ctx, expression_type, expected_type)
-            case stellaParser.PatternInlContext():
-                return self._visit_inl_pattern(ctx, expression_type, expected_type)
-            case stellaParser.PatternInrContext():
-                return self._visit_inr_pattern(ctx, expression_type, expected_type)
-            case stellaParser.PatternVariantContext():
-                return self._visit_variant_pattern(ctx, expression_type, expected_type)
-            case stellaParser.PatternListContext():
-                return self._visit_list_pattern(ctx, expression_type, expected_type)
-            case _:
-                return self._visit_pattern(ctx, expected_type)
+    def _validate_patterns(self, actual_type: Type, expected_type: Type, expression: stellaParser.PatternContext) -> Type:
+        if not expected_type:
+            return actual_type
+        if self._extension_manager.is_type_reconstruction():
+            self._unify_solver.add_constraint(expected_type, actual_type, expression)
+            return expected_type
+        if not actual_type or actual_type != expected_type:
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_PATTERN_FOR_TYPE, expression, expected_type)
+            return None
+        return expected_type
+
+    def _is_known_type(self, type: Type) -> bool:
+        if not isinstance(type, GenericType):
+            return True
+        generic_type: GenericType | None = self._type_context.resolve_generic_type(type.name)
+        if not generic_type:
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_UNDEFINED_TYPE_VARIABLE, type)
+            return False
+        return True
 
     def _validate_tuples(self, actual_tuple: TupleType, expected_tuple: TupleType, expression: ParserRuleContext) -> bool:
         if actual_tuple.arity < expected_tuple.arity or (not self._extension_manager.is_structural_subtyping() and actual_tuple.arity != expected_tuple.arity):
@@ -698,74 +1006,3 @@ class TypeInferer:
                 self._error_manager.register_error(ErrorKind.ERROR_DUPLICATE_VARIANT_TYPE_FIELDS, expected_variant)
             return False
         return True
-
-    def _visit_pattern(self, ctx: stellaParser.MatchCaseContext, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_var_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        case_type_context.save_variable_type(ctx.pattern_.name.text, expression_type)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_tuple_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        for index, tuple_pattern in enumerate(ctx.pattern_.patterns):
-            if isinstance(tuple_pattern, stellaParser.PatternVarContext):
-                case_type_context.save_variable_type(tuple_pattern.name.text, expression_type.types[index])
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_record_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        if ctx.pattern_._labelledPattern.label.text not in expression_type.labels:
-            if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_FIELD_ACCESS, ctx.pattern_._labelledPattern.label.text, ctx.pattern_)
-            return None
-        expression_labels_indices: dict[str, int] = {label: index for index, label in enumerate(expression_type.labels)}
-        for labelled_pattern in ctx.pattern_.patterns:
-            if isinstance(labelled_pattern, stellaParser.PatternVarContext):
-                if case_type_context.resolve_variable_type(labelled_pattern.label.text):
-                    if self._error_manager:
-                        self._error_manager.register_error(ErrorKind.ERROR_DUPLICATE_RECORD_PATTERN_FIELDS, expected_type)
-                    return None
-                label_type: Type = expression_type.types[expression_labels_indices[labelled_pattern.label.text]]
-                case_type_context.save_variable_type(labelled_pattern.label.text, label_type)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_inl_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        if isinstance(ctx.pattern_.pattern_, stellaParser.PatternVarContext):
-            case_type_context.save_variable_type(ctx.pattern_.pattern_.name.text, expression_type.left)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_inr_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        if isinstance(ctx.pattern_.pattern_, stellaParser.PatternVarContext):
-            case_type_context.save_variable_type(ctx.pattern_.pattern_.name.text, expression_type.right)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_variant_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        if ctx.pattern_.label.text not in expression_type.labels:
-            if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_VARIANT_LABEL, ctx.pattern_.label.text, ctx.pattern_, expected_type)
-            return None
-        if isinstance(ctx.pattern_.pattern_, stellaParser.PatternVarContext):
-            label_type: Type = expression_type.types[expression_type.labels.index(ctx.pattern_.label.text)]
-            case_type_context.save_variable_type(ctx.pattern_.pattern_.name.text, label_type)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)
-
-    def _visit_list_pattern(self, ctx: stellaParser.MatchCaseContext, expression_type: Type, expected_type: Type) -> Type:
-        case_type_context: TypeContext = TypeContext(self._type_context)
-        case_type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, case_type_context)
-        for list_pattern in ctx.pattern_.patterns:
-            if isinstance(list_pattern, stellaParser.PatternVarContext):
-                case_type_context.save_variable_type(list_pattern.name.text, expression_type.type)
-        return case_type_inferer.visit_expression(ctx.expr_, expected_type)

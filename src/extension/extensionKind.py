@@ -4,40 +4,43 @@ from enum import Enum
 class ExtensionKind(Enum):
     PREDECESSOR = (1, 'predecessor')
     NATURAL_LITERALS = (2, 'natural-literals')
-    NESTED_FUNCTION_DECLARATIONS = (3, 'nested-function-declarations')
-    NULLARY_FUNCTIONS = (4, 'nullary-functions')
-    MULTIPARAMETER_FUNCTIONS = (5, 'multiparameter-functions')
-    UNIT_TYPE = (6, 'unit-type')
-    UNIT_TYPES = (7, 'unit-types')
-    SEQUENCING = (8, 'sequencing')
-    TYPE_ASCRIPTIONS = (9, 'type-ascriptions')
-    LET_BINDINGS = (10, 'let-bindings')
-    LET_MANY_BINDINGS = (11, 'let-many-bindings')
-    PAIRS = (12, 'pairs')
-    TUPLES = (13, 'tuples')
-    RECORDS = (14, 'records')
-    STRUCTURAL_PATTERNS = (15, 'structural-patterns')
-    PATTERN_ASCRIPTIONS = (16, 'pattern-ascriptions')
-    LET_PATTERNS = (17, 'let-patterns')
-    SUM_TYPES = (18, 'sum-types')
-    VARIANTS = (19, 'variants')
-    NULLARY_VARIANT_LABELS = (20, 'nullary-variant-labels')
-    FIXPOINT_COMBINATOR = (21, 'fixpoint-combinator')
-    LETREC_BINDINGS = (22, 'letrec-bindings')
-    LETREC_MANY_BINDINGS = (23, 'letrec-many-bindings')
-    LISTS = (24, 'lists')
-    REFERENCES = (25, 'references')
-    PANIC = (26, 'panic')
-    EXCEPTIONS = (27, 'exceptions')
-    EXCEPTION_TYPE_DECLARATION = (28, 'exception-type-declaration')
-    OPEN_VARIANT_EXCEPTIONS = (29, 'open-variant-exceptions')
-    STRUCTURAL_SUBTYPING = (30, 'structural-subtyping')
-    TOP_TYPE = (31, 'top-type')
-    BOTTOM_TYPE = (32, 'bottom-type')
-    AMBIGUOUS_TYPE_AS_BOTTOM = (33, 'ambiguous-type-as-bottom')
-    TYPE_CAST = (34, 'type-cast')
-    TRY_CAST_AS = (35, 'try-cast-as')
-    TYPE_CAST_PATTERNS = (36, 'type-cast-patterns')
+    ARITHMETIC_OPERATORS = (3, 'arithmetic-operators')
+    NESTED_FUNCTION_DECLARATIONS = (4, 'nested-function-declarations')
+    NULLARY_FUNCTIONS = (5, 'nullary-functions')
+    MULTIPARAMETER_FUNCTIONS = (6, 'multiparameter-functions')
+    UNIT_TYPE = (7, 'unit-type')
+    UNIT_TYPES = (8, 'unit-types')
+    SEQUENCING = (9, 'sequencing')
+    TYPE_ASCRIPTIONS = (10, 'type-ascriptions')
+    LET_BINDINGS = (11, 'let-bindings')
+    LET_MANY_BINDINGS = (12, 'let-many-bindings')
+    PAIRS = (13, 'pairs')
+    TUPLES = (14, 'tuples')
+    RECORDS = (15, 'records')
+    STRUCTURAL_PATTERNS = (16, 'structural-patterns')
+    PATTERN_ASCRIPTIONS = (17, 'pattern-ascriptions')
+    LET_PATTERNS = (18, 'let-patterns')
+    SUM_TYPES = (19, 'sum-types')
+    VARIANTS = (20, 'variants')
+    NULLARY_VARIANT_LABELS = (21, 'nullary-variant-labels')
+    FIXPOINT_COMBINATOR = (22, 'fixpoint-combinator')
+    LETREC_BINDINGS = (23, 'letrec-bindings')
+    LETREC_MANY_BINDINGS = (24, 'letrec-many-bindings')
+    LISTS = (25, 'lists')
+    REFERENCES = (26, 'references')
+    PANIC = (27, 'panic')
+    EXCEPTIONS = (28, 'exceptions')
+    EXCEPTION_TYPE_DECLARATION = (29, 'exception-type-declaration')
+    OPEN_VARIANT_EXCEPTIONS = (30, 'open-variant-exceptions')
+    STRUCTURAL_SUBTYPING = (31, 'structural-subtyping')
+    TOP_TYPE = (32, 'top-type')
+    BOTTOM_TYPE = (33, 'bottom-type')
+    AMBIGUOUS_TYPE_AS_BOTTOM = (34, 'ambiguous-type-as-bottom')
+    TYPE_CAST = (35, 'type-cast')
+    TRY_CAST_AS = (36, 'try-cast-as')
+    TYPE_CAST_PATTERNS = (37, 'type-cast-patterns')
+    TYPE_RECONSTRUCTION = (38, 'type-reconstruction')
+    UNIVERSAL_TYPES = (39, 'universal-types')
 
     def __init__(self, num: int, str_name: str):
         self.num = num
@@ -50,6 +53,8 @@ class ExtensionKind(Enum):
                 return cls.PREDECESSOR
             case cls.NATURAL_LITERALS.str_name:
                 return cls.NATURAL_LITERALS
+            case cls.ARITHMETIC_OPERATORS.str_name:
+                return cls.ARITHMETIC_OPERATORS
             case cls.NESTED_FUNCTION_DECLARATIONS.str_name:
                 return cls.NESTED_FUNCTION_DECLARATIONS
             case cls.NULLARY_FUNCTIONS.str_name:
@@ -118,5 +123,9 @@ class ExtensionKind(Enum):
                 return cls.TRY_CAST_AS
             case cls.TYPE_CAST_PATTERNS.str_name:
                 return cls.TYPE_CAST_PATTERNS
+            case cls.TYPE_RECONSTRUCTION.str_name:
+                return cls.TYPE_RECONSTRUCTION
+            case cls.UNIVERSAL_TYPES.str_name:
+                return cls.UNIVERSAL_TYPES
             case _:
                 raise ValueError(f'Can\'t find extension {extension_kind}')

@@ -1,5 +1,5 @@
 from antlr.stellaParser import stellaParser
-from type.type import BoolType, BottomType, FunctionalType, ListType, NatType, RecordType, RefType, SumType, TopType, TupleType, Type, UnitType, UnknownType, VariantType
+from type.type import BoolType, BottomType, FunctionalType, GenericType, ListType, NatType, RecordType, RefType, SumType, TopType, TupleType, Type, TypeVariable, UnitType, UniversalWrapperType, UnknownType, VariantType
 
 
 def get_type(ctx: stellaParser.StellatypeContext) -> Type:
@@ -10,6 +10,12 @@ def get_type(ctx: stellaParser.StellatypeContext) -> Type:
             return __visit_nat_type(ctx)
         case stellaParser.TypeFunContext():
             return __visit_functional_type(ctx)
+        case stellaParser.TypeForAllContext():
+            return __visit_for_all_type(ctx)
+        case stellaParser.TypeVarContext():
+            return __visit_variable_type(ctx)
+        case stellaParser.TypeAutoContext():
+            return __visit_auto_type(ctx)
         case stellaParser.TypeUnitContext():
             return __visit_unit_type(ctx)
         case stellaParser.TypeTupleContext():
@@ -41,6 +47,17 @@ def __visit_nat_type(ctx: stellaParser.TypeNatContext) -> NatType:
 
 def __visit_functional_type(ctx: stellaParser.TypeFunContext) -> FunctionalType:
     return FunctionalType(get_type(ctx.paramTypes[0]), get_type(ctx.returnType))
+
+def __visit_for_all_type(ctx: stellaParser.TypeForAllContext) -> UniversalWrapperType:
+    type_params: list[GenericType] = [GenericType(type.text) for type in ctx.types]
+    inner_type: Type = get_type(ctx.type_)
+    return UniversalWrapperType(type_params, inner_type)
+
+def __visit_variable_type(ctx: stellaParser.TypeVarContext) -> GenericType:
+    return GenericType(ctx.name.text)
+
+def __visit_auto_type(ctx: stellaParser.TypeAutoContext) -> TypeVariable:
+    return TypeVariable()
 
 def __visit_unit_type(ctx: stellaParser.TypeUnitContext) -> UnitType:
     return UnitType()

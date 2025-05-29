@@ -92,6 +92,16 @@ class Error:
                 return 'expected a subtype of {} but got  type of {} for expression {}'
             case ErrorKind.ERROR_UNEXPECTED_REFERENCE:
                 return 'expected an expression of a non-reference type {} but got reference type {} for expression {}'
+            case ErrorKind.ERROR_OCCURS_CHECK_INFINITE_TYPE:
+                return 'infinite type found while checking expression {}'
+            case ErrorKind.ERROR_NOT_A_GENERIC_FUNCTION:
+                return 'expected an expression of a generic function type but got non-generic function type {} for expression {}'
+            case ErrorKind.ERROR_INCORRECT_NUMBER_OF_TYPE_ARGUMENTS:
+                return 'got unexpected arguments count, expected {} but got {}'
+            case ErrorKind.ERROR_UNDEFINED_TYPE_VARIABLE:
+                return 'type variable {} is undefined'
+            case ErrorKind.ERROR_AMBIGUOUS_PATTERN_TYPE:
+                return 'cam\'t infer the pattern {} type'
             case _:
                 return 'unknown error'
 

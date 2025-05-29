@@ -13,6 +13,9 @@ class ExtensionManager:
     def is_natural_literals(self) -> bool:
         return ExtensionKind.NATURAL_LITERALS in self._extensions
 
+    def is_arithmetic_operators(self) -> bool:
+        return ExtensionKind.ARITHMETIC_OPERATORS in self._extensions
+
     def is_nested_function_declarations(self) -> bool:
         return ExtensionKind.NESTED_FUNCTION_DECLARATIONS in self._extensions
 
@@ -114,6 +117,12 @@ class ExtensionManager:
 
     def is_type_cast_patterns(self) -> bool:
         return ExtensionKind.TYPE_CAST_PATTERNS in self._extensions
+
+    def is_type_reconstruction(self) -> bool:
+        return ExtensionKind.TYPE_RECONSTRUCTION in self._extensions
+
+    def is_universal_types(self) -> bool:
+        return ExtensionKind.UNIVERSAL_TYPES in self._extensions
 
     def register_extension(self, extension: ExtensionKind) -> None:
         self._extensions.add(extension)

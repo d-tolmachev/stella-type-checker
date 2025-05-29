@@ -6,10 +6,12 @@ from antlr.stellaParserVisitor import stellaParserVisitor
 from error.errorKind import ErrorKind
 from error.errorManager import ErrorManager
 from extension.extensionManager import ExtensionManager
-from type.type import FunctionalType, Type
+from type.type import FunctionalType, GenericType, Type, UniversalWrapperType
 from type.typeContext import TypeContext
 from type.typeInferer import TypeInferer
 from type.typeVisitor import get_type
+from unification.unificationResult import UnificationFailed, UnificationFailedInfiniteType, UnificationResult, UnificationSucceded
+from unification.unifySolver import UnifySolver
 
 
 class StructureVisitor(stellaParserVisitor):
@@ -56,7 +58,7 @@ class TopLevelDeclarationVisitor(stellaParserVisitor):
     def visitDeclFun(self, ctx: stellaParser.DeclFunContext) -> None:
         if not ctx.paramDecls:
             return None
-        param_type: Type = get_type(ctx._paramDecl.paramType)
+        param_type: Type = get_type(ctx.paramDecls[0].paramType)
         return_type: Type = get_type(ctx.returnType)
         functional_type: FunctionalType = FunctionalType(param_type, return_type)
         self._type_context.save_functional_type(ctx.name.text, functional_type)
@@ -66,11 +68,13 @@ class TopLevelDeclarationVisitor(stellaParserVisitor):
 class TypeVisitor(stellaParserVisitor):
     _error_manager: ErrorManager
     _extension_manager: ExtensionManager
+    _unify_solver: UnifySolver
     _type_context: TypeContext
 
-    def __init__(self, error_manager: ErrorManager, extension_manager: ExtensionManager, parent_type_context: TypeContext = None):
+    def __init__(self, error_manager: ErrorManager, extension_manager: ExtensionManager, unify_solver: UnifySolver, parent_type_context: TypeContext = None):
         self._error_manager = error_manager
         self._extension_manager = extension_manager
+        self._unify_solver = unify_solver
         self._type_context = TypeContext(parent_type_context)
 
     def visitProgram(self, ctx: stellaParser.ProgramContext):
@@ -80,8 +84,20 @@ class TypeVisitor(stellaParserVisitor):
             match decl:
                 case stellaParser.DeclFunContext():
                     self.visitDeclFun(decl)
+                case stellaParser.DeclFunGenericContext():
+                    self.visitDeclFunGeneric(decl)
                 case stellaParser.DeclExceptionTypeContext():
                     self.visitDeclExceptionType(decl)
+        unification_result: UnificationResult = self._unify_solver.solve()
+        match unification_result:
+            case UnificationFailed():
+                self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, unification_result.actual_type, unification_result.expected_type, unification_result.expression)
+            case UnificationFailedInfiniteType():
+                self._error_manager.register_error(ErrorKind.ERROR_OCCURS_CHECK_INFINITE_TYPE, unification_result.expression)
+            case UnificationSucceded():
+                pass
+            case _:
+                raise ValueError(f'Unexpected value: {unification_result}')
         return None
 
     def visitDeclFun(self, ctx: stellaParser.DeclFunContext) -> None:
@@ -94,11 +110,22 @@ class TypeVisitor(stellaParserVisitor):
         top_level_declaration_visitor: TopLevelDeclarationVisitor = TopLevelDeclarationVisitor(functional_type_context)
         for child in ctx.children:
             top_level_declaration_visitor.visit(child)
-        functional_type_visitor: TypeVisitor = TypeVisitor(self._error_manager, self._extension_manager, functional_type_context)
+        functional_type_visitor: TypeVisitor = TypeVisitor(self._error_manager, self._extension_manager, self._unify_solver, functional_type_context)
         for child in ctx.children:
             functional_type_visitor.visit(child)
-        type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, functional_type_context)
+        type_inferer: TypeInferer = TypeInferer(self._error_manager, self._extension_manager, self._unify_solver, functional_type_context)
         type_inferer.visit_expression(ctx.returnExpr, expected_return_type)
+        return None
+
+    def visitDeclFunGeneric(self, ctx: stellaParser.DeclFunGenericContext) -> None:
+        if not ctx.paramDecls:
+            return None
+        generic_types: list[GenericType] = [GenericType(generic.text) for generic in ctx.generics]
+        param_type: Type = get_type(ctx.paramDecls[0].paramType)
+        return_type: Type = get_type(ctx.returnType)
+        functional_type: FunctionalType = FunctionalType(param_type, return_type)
+        forall_type: UniversalWrapperType = UniversalWrapperType(generic_types, functional_type)
+        self._type_context.save_functional_type(ctx.name.text, forall_type)
         return None
 
     def visitDeclExceptionType(self, ctx: stellaParser.DeclExceptionTypeContext) -> None:
