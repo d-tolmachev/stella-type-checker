@@ -279,7 +279,7 @@ class TypeInferer:
         actual_type: Type = self.visit_expression(ctx.expr_, expected_type if expected_type and not self._extension_manager.is_type_reconstruction() else target_type)
         if not actual_type:
             return None
-        return self._validate_types(actual_type, expected_type, ctx)
+        return self._validate_types(target_type, expected_type, ctx)
 
     def _visit_let(self, ctx: stellaParser.LetContext, expected_type: Type) -> Type:
         expression_type: Type = self.visit_expression(ctx.patternBinding(0).rhs, None)
@@ -323,7 +323,6 @@ class TypeInferer:
                 return None
             tuple_arity: int = tuple_type.arity if isinstance(tuple_type, TupleType) else int(ctx.index.text)
             target_type: TupleType = TupleType([TypeVariable() for _ in range(tuple_arity)])
-            self._unify_solver.add_constraint(tuple_type, target_type, ctx)
             actual_type: Type = target_type.types[int(ctx.index.text) - 1]
             return self._validate_types(actual_type, expected_type, ctx)
         if not isinstance(tuple_type, TupleType):
@@ -362,6 +361,8 @@ class TypeInferer:
         record_type: Type = self.visit_expression(ctx.expr_, None)
         if not record_type:
             return None
+        if self._extension_manager.is_type_reconstruction() and isinstance(record_type, TypeVariable):
+            return TypeVariable()
         if not isinstance(record_type, RecordType):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_NOT_A_RECORD, record_type, ctx)
@@ -667,11 +668,11 @@ class TypeInferer:
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_PARAMETER, NatType(), step_type.param, ctx.step.paramDecl if isinstance(ctx.step, stellaParser.AbstractionContext) else ctx.step)
             return None
-        if not isinstance(step_type.ret, FunctionalType) or step_type.ret.param != step_type.ret.ret:
+        if not isinstance(step_type.ret, FunctionalType) or step_type.ret.param != step_type.ret.ret and not self._extension_manager.is_type_reconstruction():
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, FunctionalType(None, None, False), step_type.ret, ctx.step)
             return None
-        if step_type.ret.param != initial_type:
+        if step_type.ret.param != initial_type and not self._extension_manager.is_type_reconstruction():
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, initial_type, step_type.ret.param, ctx.step)
             return None
@@ -721,7 +722,7 @@ class TypeInferer:
                 self._unify_solver.add_constraint(list_type.type, expression_type, ctx.exprs[index])
             return self._validate_types(list_type, expected_type, ctx)
         for index, expression_type in enumerate(expression_types):
-            if expression_type != list_type.type:
+            if not expression_type.is_subtype_of(list_type.type, self._extension_manager.is_structural_subtyping()):
                 if self._error_manager:
                     self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, list_type, expression_type, ctx.exprs[index])
                 return None
@@ -806,6 +807,8 @@ class TypeInferer:
         return actual_type
 
     def _visit_const_memory(self, ctx: stellaParser.ConstMemoryContext, expected_type: Type) -> Type:
+        if self._extension_manager.is_type_reconstruction():
+            return TypeVariable()
         if not expected_type:
             if self._extension_manager.is_ambiguous_type_as_bottom():
                 return RefType(BottomType())
@@ -819,9 +822,11 @@ class TypeInferer:
         return expected_type
 
     def _visit_deref(self, ctx: stellaParser.DerefContext, expected_type: Type) -> Type:
-        ref_type: Type = self.visit_expression(ctx.expr_, None)
+        ref_type: Type = self.visit_expression(ctx.expr_, RefType(expected_type) if expected_type else None)
         if not ref_type:
             return None
+        if self._extension_manager.is_type_reconstruction() and isinstance(ref_type, TypeVariable):
+            return ref_type
         if not isinstance(ref_type, RefType):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, RefType(expected_type), ref_type, ctx.expr_)
@@ -830,6 +835,8 @@ class TypeInferer:
         return self._validate_types(actual_type, expected_type, ctx)
 
     def _visit_assign(self, ctx: stellaParser.AssignContext, expected_type: Type) -> UnitType:
+        if self._extension_manager.is_type_reconstruction():
+            return UnitType()
         if expected_type and not (isinstance(expected_type, UnitType) or isinstance(expected_type, TopType)):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, expected_type, UnitType(), ctx)
@@ -844,7 +851,7 @@ class TypeInferer:
         rhs_type: Type = self.visit_expression(ctx.rhs, None)
         if not rhs_type:
             return None
-        if lhs_type.inner_type != rhs_type:
+        if not rhs_type.is_subtype_of(lhs_type.inner_type, self._extension_manager.is_structural_subtyping()):
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION, lhs_type.inner_type, rhs_type, ctx.rhs)
             return None
@@ -860,16 +867,18 @@ class TypeInferer:
         return expected_type
 
     def _visit_throw(self, ctx: stellaParser.ThrowContext, expected_type: Type) -> Type:
+        exception_type: Type | None = self._type_context.resolve_exception_type()
+        if not exception_type:
+            if self._error_manager:
+                self._error_manager.register_error(ErrorKind.ERROR_EXCEPTION_TYPE_NOT_DECLARED)
+            return None
+        if self._extension_manager.is_type_reconstruction():
+            return TypeVariable()
         if not expected_type:
             if self._extension_manager.is_ambiguous_type_as_bottom():
                 return BottomType()
             if self._error_manager:
                 self._error_manager.register_error(ErrorKind.ERROR_AMBIGUOUS_THROW_TYPE, ctx)
-            return None
-        exception_type: Type | None = self._type_context.resolve_exception_type()
-        if not exception_type:
-            if self._error_manager:
-                self._error_manager.register_error(ErrorKind.ERROR_EXCEPTION_TYPE_NOT_DECLARED)
             return None
         if not self.visit_expression(ctx.expr_, exception_type):
             return None

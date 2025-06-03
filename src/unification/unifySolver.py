@@ -12,7 +12,8 @@ class UnifySolver:
         self._constraints = []
 
     def add_constraint(self, left: Type, right: Type, rule_context: ParserRuleContext) -> None:
-        self._constraints.append(Constraint(left, right, rule_context))
+        if left and right:
+            self._constraints.append(Constraint(left, right, rule_context))
 
     def solve(self) -> UnificationResult:
         return UnifySolver._solve(self._constraints)

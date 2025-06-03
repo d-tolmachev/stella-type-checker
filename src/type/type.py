@@ -109,6 +109,8 @@ class FunctionalType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         return other.param.is_subtype_of(self.param, subtyping_enabled) and self.ret.is_subtype_of(other.ret, subtyping_enabled)
@@ -203,6 +205,8 @@ class TupleType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         if len(self.types) != len(other.types):
@@ -252,6 +256,8 @@ class RecordType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         if len(self.types) < len(other.types):
@@ -308,6 +314,8 @@ class SumType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         return self.left.is_subtype_of(other.left, subtyping_enabled) and self.right.is_subtype_of(other.right, subtyping_enabled)
@@ -351,6 +359,8 @@ class VariantType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         if len(self.types) > len(other.types):
@@ -405,6 +415,8 @@ class ListType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         return self.type.is_subtype_of(other.type, subtyping_enabled)
@@ -441,6 +453,8 @@ class RefType(Type):
             return True
         if not subtyping_enabled:
             return False
+        if isinstance(other, TopType):
+            return True
         if other is None or type(self) is not type(other):
             return False
         return self.inner_type.is_subtype_of(other.inner_type, subtyping_enabled)
@@ -489,7 +503,7 @@ class BottomType(Type, metaclass = SingletonABCMeta):
         return 'Bottom'
 
     def is_subtype_of(self, other: Type, subtyping_enabled: bool) -> bool:
-        return subtyping_enabled
+        return True
 
     def __eq__(self, other: object) -> bool:
         if not self.is_known_type or (isinstance(other, Type) and not other.is_known_type):

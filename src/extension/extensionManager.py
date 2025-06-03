@@ -125,4 +125,5 @@ class ExtensionManager:
         return ExtensionKind.UNIVERSAL_TYPES in self._extensions
 
     def register_extension(self, extension: ExtensionKind) -> None:
-        self._extensions.add(extension)
+        if extension:
+            self._extensions.add(extension)

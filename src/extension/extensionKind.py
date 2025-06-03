@@ -128,4 +128,4 @@ class ExtensionKind(Enum):
             case cls.UNIVERSAL_TYPES.str_name:
                 return cls.UNIVERSAL_TYPES
             case _:
-                raise ValueError(f'Can\'t find extension {extension_kind}')
+                return None
